@@ -17,9 +17,9 @@ TEST(ColorIndexTest, Works) {
     // imwrite("C:\\Users\\askolds\\Downloads\\DroniOtsu\\011_A_45m_Contour_MTEST.jpg", output);
 
     ColorIndexx(
-        R"(C:\Users\askolds\Downloads\DroniOtsu\011_A_45m_Contour.jpg)",
-        R"(C:\Users\askolds\Downloads\DroniOtsu\011_A_45m_Contour_field_mask.jpg)",
-        R"(C:\Users\askolds\Downloads\DroniOtsu)",
+        R"(~\Downloads\DroniOtsu\011_A_45m_Contour.jpg)",
+        R"(~\Downloads\DroniOtsu\011_A_45m_Contour_field_mask.jpg)",
+        R"(~\Downloads\DroniOtsu)",
         -1,
         2,
         -1,
