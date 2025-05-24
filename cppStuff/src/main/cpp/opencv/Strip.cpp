@@ -165,7 +165,7 @@ SimplePointsResult extractAdaptivePattern3(
             // TODO: Exponential or smth
             const int customTolerance = std::min(static_cast<int>(roundedRows * tolerance), spacing / 3);
             // Within tolerance, is real point
-            if (noise < roundedRows * customTolerance /*|| noise < flooredRows * tolerance*/)
+            if (noise < customTolerance /*|| noise < flooredRows * tolerance*/)
             {
                 const int rows = /*noise < flooredRows * tolerance ? flooredRows : */static_cast<int>(roundedRows);
                 // spacing for interpolated rows
@@ -197,7 +197,7 @@ SimplePointsResult extractAdaptivePattern3(
                         currentPoint = calculatedX;
                         currentPointIdx = minIndex;
                         // look at the point after the real point
-                        idx = minIndex + 1;
+                        idx = minIndex;
                         skip = true;
                         break;
                     }
@@ -242,7 +242,9 @@ AdaptivePatternResult getWithInterpolatedPoints(
     const int tolerance,
     const int prevOffset,
     const int maxOffset,
-    const std::vector<int>& prevPointsUnsorted
+    const std::vector<int>& prevPointsUnsorted,
+    const Mat& mask,
+    const int row
 )
 {
     AdaptivePatternResult result;
@@ -254,43 +256,45 @@ AdaptivePatternResult getWithInterpolatedPoints(
 
 #pragma region Best starting point ( TODO: Find one that matches previous + offset )
     // TODO: Best point by finding one that matches previous point + offset
-
-    int currentPoint;
+    int currentPoint = -1; // init for empty points
     int currentPointIdx;
     int idx = 0;
-    if (realPointsSorted.empty() || prevPoints.empty())
+    if (!xPoints.empty())
     {
-        currentPoint = xPoints[0];
-    }
-    // Find a point that is close to a previous point and use that as first point
-    else
-    {
-        bool found = false;
-        int realPointIdx = 0;
-        while (!found && realPointIdx < realPointsSorted.size())
+        if ((realPointsSorted.empty() || prevPoints.empty()))
         {
-            currentPoint = realPointsSorted[realPointIdx];
-            int closestPrevPoint = findClosestPoint(prevPoints, currentPoint, prevOffset);
-            if (std::abs(std::abs(currentPoint - (closestPrevPoint + prevOffset))) <= tolerance)
+            currentPoint = xPoints[0];
+        }
+        // Find a point that is close to a previous point and use that as first point
+        else
+        {
+            bool found = false;
+            int realPointIdx = 0;
+            while (!found && realPointIdx < realPointsSorted.size())
             {
-                found = true;
+                currentPoint = realPointsSorted[realPointIdx];
+                int closestPrevPoint = findClosestPoint(prevPoints, currentPoint, prevOffset);
+                if (std::abs(std::abs(currentPoint - (closestPrevPoint + prevOffset))) <= tolerance)
+                {
+                    found = true;
+                }
+                realPointIdx++;
             }
-            realPointIdx++;
+            if (!found)
+            {
+                currentPoint = realPointsSorted[0];
+            }
         }
-        if (!found)
+        result.realPoints.push_back(currentPoint);
+        while (xPoints[idx] != currentPoint)
         {
-            currentPoint = realPointsSorted[0];
+            idx++;
         }
-    }
-    result.realPoints.push_back(currentPoint);
-    while (xPoints[idx] != currentPoint)
-    {
-        idx++;
     }
     currentPointIdx = idx;
 #pragma endregion Best starting point
 
-    auto nextIdx = +[](int lIdx) { return lIdx + 1; };
+    auto nextIdx = +[](const int lIdx) { return lIdx + 1; };
     int firstIdx = idx;
     int firstCurrentPoint = currentPoint;
     bool forwardsDir = true;
@@ -676,6 +680,23 @@ loopBeginning:
     resultingPoints.insert(resultingPoints.end(), result.interpolatedPoints.begin(), result.interpolatedPoints.end());
     resultingPoints.insert(resultingPoints.end(), result.previousPoints.begin(), result.previousPoints.end());
     ranges::sort(resultingPoints);
+
+    // Remove points not in mask
+    auto pointsIter = resultingPoints.begin();
+    while (pointsIter != resultingPoints.end())
+    {
+        if (mask.at<uint8_t>(row, *pointsIter) == 0)
+        {
+            std::erase(result.realPoints, *pointsIter);
+            std::erase(result.interpolatedPoints, *pointsIter);
+            std::erase(result.previousPoints, *pointsIter);
+            pointsIter = resultingPoints.erase(pointsIter);
+        } else
+        {
+            ++pointsIter;
+        }
+    }
+
     int offsetSum = 0;
     int offsetPoints = 0;
     vector<int> usedPrevPoints;
@@ -684,7 +705,7 @@ loopBeginning:
         for (auto& p : resultingPoints)
         {
             auto prevPoint = findClosestPoint(prevPoints, p, prevOffset);
-            // TODO: Custom spacing
+            // TODO: Custom spacing (!!!)
             if (std::abs(p - (prevPoint + prevOffset)) <= spacing / 2)
             {
                 usedPrevPoints.push_back(prevPoint);
@@ -694,7 +715,7 @@ loopBeginning:
         }
     }
     vector<int> unusedPrevPoints;
-    if (!prevPoints.empty() && !usedPrevPoints.empty())
+    if (!prevPoints.empty())
         ranges::set_difference(prevPoints, usedPrevPoints, std::back_inserter(unusedPrevPoints));
     if (!resultingPoints.empty())
         ranges::set_difference(xPoints, resultingPoints, std::back_inserter(result.noisePoints));
@@ -704,25 +725,30 @@ loopBeginning:
     while (prevIter != unusedPrevPoints.end())
     {
         auto noiseIter = result.noisePoints.begin();
+        bool erased = false;
         while (noiseIter != result.noisePoints.end())
         {
             // found real point
-            if (std::abs(*noiseIter - (*prevIter + prevOffset)) <= tolerance)
+            if (std::abs(*noiseIter - (*prevIter + prevOffset)) <= tolerance && mask.at<uint8_t>(row, *noiseIter) != 0)
             {
                 result.realPoints.push_back(*noiseIter);
                 prevIter = unusedPrevPoints.erase(prevIter);
+                erased = true;
                 result.noisePoints.erase(noiseIter);
                 break;
             }
             ++noiseIter;
         }
-        if (prevIter != unusedPrevPoints.end())
+        if (prevIter != unusedPrevPoints.end() && !erased)
             ++prevIter;
     }
 
     for (auto& p : unusedPrevPoints)
     {
-        result.previousPoints.push_back(p + prevOffset);
+        if (mask.at<uint8_t>(row, p + prevOffset) != 0)
+        {
+            result.previousPoints.push_back(p + prevOffset);
+        }
     }
 
     // Need at least 3 points for a reliable-ish average
@@ -740,6 +766,7 @@ loopBeginning:
 /**
  * Calculates spacings and possible points per row
  * @param input Input image (grayscale, with only POIs left)
+ * @param mask Mask
  * @param spacingMap Row spacing in format {rowSpacing, numberOfOccurences}
  * @param pointsByRow Output vector for detected points per row
  * @param stripHeight Chosen strip height in pixels
@@ -747,10 +774,11 @@ loopBeginning:
  */
 void CalculateStrips(
     const UMat& input,
+    const Mat& mask,
     map<int, int>& spacingMap,
     std::map<int, std::vector<int>>& pointsByRow,
     const int stripHeight,
-    const int whiteThreshold
+    const float whiteThreshold
 )
 {
     // Caching
@@ -790,32 +818,38 @@ void CalculateStrips(
 
     // std::ifstream f("spacingMap.json");
     // std::ifstream f2("pointsByRow.json");
-    const int cols = input.cols;
-    const int rows = input.rows;
 
-    // Create output image (black background)
-    cv::UMat output(rows, cols, CV_8UC1, cv::Scalar(0));
-    auto tempOutputMat = cv::imread(R"(/home/askolds/Downloads/DroniOtsu/woOutlier/011_A_45m_Contour_otsu_4.jpg)", cv::IMREAD_COLOR);
-    UMat tempOutput;
-    tempOutputMat.copyTo(tempOutput);
+    // Get mask min and max rows
+    int minMaskRow = input.rows;
+    int maxMaskRow = 0;
+
+    for (int i = 0; i < mask.rows; ++i) {
+        if (cv::countNonZero(mask.row(i)) > 0) {
+            if (minMaskRow > i)
+            {
+                minMaskRow = i;
+            }
+            if (maxMaskRow < i)
+            {
+                maxMaskRow = i;
+            }
+        }
+    }
+
+    const int cols = input.cols;
 
     UMat prevHistogram;
     UMat currHistogram;
 
     // Go strip by height
-    // TODO: Only do this in range min/max, ignoring empty rows at top/bottom of image
-    for (int y = 0; y < rows; y += stripHeight)
+    for (int y = minMaskRow; y <= maxMaskRow; y += stripHeight)
     {
         // Actual strip height, in case not enough pixels left over
-        const int currentStripHeight = std::min(stripHeight, rows - y);
+        const int currentStripHeight = std::min(stripHeight, maxMaskRow - y);
         UMat strip = input(Range(y, y + currentStripHeight), Range(0, cols));
 
-        Point startPoint = Point(0, y);
-        Point endPoint = Point(input.cols, y);
-        line(tempOutput, startPoint, endPoint, cv::Scalar(0, 0, 255), 2);
-
-        bool isFirst = y == 0;
-        bool isLast = y + stripHeight >= rows;
+        bool isFirst = y == minMaskRow;
+        bool isLast = y + stripHeight > maxMaskRow;
 
         // Calculate first histogram
         if (isFirst)
@@ -871,7 +905,7 @@ void CalculateStrips(
         }
 
         // TODO: Another parameter?
-        int threshold = whiteThreshold;
+        float threshold = whiteThreshold;
         if (!isFirst) threshold += whiteThreshold / 2;
         if (!isLast) threshold += whiteThreshold / 2;
 
@@ -896,22 +930,29 @@ void CalculateStrips(
         // Step 2: Closing — fill small gaps
         cv::morphologyEx(denoisedMask, cleanedMask, cv::MORPH_CLOSE, closeKernel);
 
-        // Copy result to output image
-        cleanedMask.copyTo(output(cv::Range(y + currentStripHeight / 2, y + currentStripHeight / 2 + 1),
-                                  cv::Range::all())); // Write one row directly
-
         // Get centroids
         cv::Mat labels, stats, centroids;
         int nLabels = cv::connectedComponentsWithStats(cleanedMask, labels, stats, centroids, 8, CV_32S);
 
-        // Step 3: Create new image with white dots at centroids
-        cv::Mat centerDotsMat = cv::Mat::zeros(output.rows, output.cols, CV_8UC1);
         int lastCol;
+
+        // add empty vector if no points
+        if (nLabels < 2)
+        {
+            vector<int> vec;
+            pointsByRow[y + currentStripHeight / 2] = vec;
+        }
 
         // Go through each line
         for (int i = 1; i < nLabels; ++i)
         {
             int cx = static_cast<int>(centroids.at<double>(i, 0));
+
+            // don't do not in mask
+            if (mask.at<uint8_t>(y + currentStripHeight / 2, cx) == 0)
+            {
+                continue;
+            }
 
             if (cx >= 0 && cx < input.cols)
             {
@@ -939,68 +980,38 @@ void CalculateStrips(
             }
             lastCol = cx;
         }
-
-        // sort(xCoords, xCoords + nLabels - 1);
-
-        // if (nLabels > 2)
-        // {
-        //     for (int i = 1; i < nLabels - 1; ++i)
-        //     {
-        //         if (numberMap.contains(xCoords[i] - xCoords[i - 1]))
-        //         {
-        //             numberMap[xCoords[i] - xCoords[i - 1]]++;
-        //         }
-        //         else
-        //         {
-        //             numberMap.insert({xCoords[i] - xCoords[i - 1], 1});
-        //         }
-        //     }
-        // }
-
-        // Debug view
-        // cv::UMat output2;
-        // cv::resize(strip, output2, cv::Size(), displayScale, displayScale, cv::INTER_AREA);
-        // cv::resize(histogram2, output2, cv::Size(), displayScale, 1, cv::INTER_AREA);
-
-        // cv::imshow("Visualization", output2);
-        // cv::waitKey(0);
-        // printf("Next\n");
     }
-
-    imwrite(R"(/home/askolds/Downloads/DroniOtsu/image_split_lines_grayscale.jpg)", tempOutput);
-
     // Caching
-    std::ofstream o("/home/askolds/Downloads/DroniOtsu/spacingMap.json");
-    json j1 = json::object();
-    for (const auto& [k, v] : spacingMap) {
-        j1[std::to_string(k)] = v;
-    }
-    o << j1 << std::endl;
-    std::ofstream o2("/home/askolds/Downloads/DroniOtsu/pointsByRow.json");
-    json j2 = json::object();
-    for (const auto& [k, v] : pointsByRow) {
-        j2[std::to_string(k)] = v;
-    }
-    o2 << j2 << std::endl;
+    // std::ofstream o("/home/askolds/Downloads/DroniOtsu/spacingMap.json");
+    // json j1 = json::object();
+    // for (const auto& [k, v] : spacingMap) {
+    //     j1[std::to_string(k)] = v;
+    // }
+    // o << j1 << std::endl;
+    // std::ofstream o2("/home/askolds/Downloads/DroniOtsu/pointsByRow.json");
+    // json j2 = json::object();
+    // for (const auto& [k, v] : pointsByRow) {
+    //     j2[std::to_string(k)] = v;
+    // }
+    // o2 << j2 << std::endl;
 }
 
 void processImage(
     const cv::UMat& input,
+    const Mat& originalImage,
+    const Mat& mask,
     int stripHeight,
-    int whiteThreshold,
+    float whiteThreshold,
     float tolerancePercentage,
-    float maxOffsetPercentage,
-    double displayScale = 0.05
+    float maxOffsetPercentage
 )
 {
-    auto original = cv::imread(R"(/home/askolds/Downloads/DroniOtsu/011_A_45m_Contour.jpg)", cv::IMREAD_COLOR);
-    auto original2 = cv::imread(R"(/home/askolds/Downloads/DroniOtsu/011_A_45m_Contour.jpg)", cv::IMREAD_COLOR);
-
     map<int, int> spacingMap;
     /* y, [x] */
     std::map<int, std::vector<int>> pointsByRow;
     CalculateStrips(
         input,
+        mask,
         spacingMap,
         pointsByRow,
         stripHeight,
@@ -1028,12 +1039,6 @@ void processImage(
         mostCommon = mostCommonSpacing.first;
     }
 
-    // TODO: Parameters
-    // int tolerance = 0.1 * mostCommon;
-    // int maxOffset = 0.3 * mostCommon;
-
-    // printf("Spacing: %d\n", mostCommon);
-    // printf("Tolerance: %d\n", tolerance);
 
     /** Rows ranked by how many points there are, how much noise etc. */
     map<int, float> rowScore;
@@ -1063,32 +1068,6 @@ void processImage(
         vector<int> noisePoints;
         ranges::set_difference(snd, realPoints, std::back_inserter(noisePoints));
 
-        // for (auto & p : noisePoints)
-        // {
-        //     cv::circle(original2, cv::Point(p, fst), 20, cv::Scalar(0, 0, 0), -1); // red (BGR)
-        // }
-        // for (auto & p : points.interpolatedPoints)
-        // {
-        //     cv::circle(original2, cv::Point(p, fst), 18, cv::Scalar(255, 0, 0), -1); // red (BGR)
-        // }
-        // for (auto & p : points2.interpolatedPoints)
-        // {
-        //     cv::circle(original2, cv::Point(p, fst), 18, cv::Scalar(0, 255, 0), -1); // red (BGR)
-        // }
-        // // for (auto & p : points.previousPoints)
-        // // {
-        // //     cv::circle(original2, cv::Point(p, fst), 16, cv::Scalar(0, 255, 0), -1); // red (BGR)
-        // // }
-        // for (auto & p : realPoints)
-        // {
-        //     cv::circle(original2, cv::Point(p, fst), 14, cv::Scalar(0, 0, 255), -1); // red (BGR)
-        // }
-
-
-        // prev.clear();
-        // prev.insert(prev.end(), points.realPoints.begin(), points.realPoints.end());
-        // prev.insert(prev.end(), points.interpolatedPoints.begin(), points.interpolatedPoints.end());
-        // prev.insert(prev.end(), points.previousPoints.begin(), points.previousPoints.end());
         rowScore[fst] = static_cast<float>(
             static_cast<float>(realPoints.size()) / static_cast<float>(snd.size())
             - 0.5 * static_cast<float>(interpolatedPoints.size()) / static_cast<float>(snd.size())
@@ -1102,26 +1081,6 @@ void processImage(
         // cv::Point pt(7000 + 10 * static_cast<int>(rowScore[fst]), fst + stripHeight / 2); // pixel coordinates
         // cv::putText( original2, std::format("{:.2f}", rowScore[fst]), pt, cv::FONT_HERSHEY_COMPLEX_SMALL, 3.0, cv::Scalar(0,255,255), 3);
         // printf("%d \t\t %f\n", fst, rowScore[fst]);
-
-        // prevOffset = points.offset;
-        // if (prev.size() >= 2)
-        // {
-        //     vector<int> sorted = prev;
-        //     std::sort(sorted.begin(), sorted.end());
-        //     int sum = 0;
-        //     auto first = *sorted.begin();
-        //     auto prev = first;
-        //     for (auto & p : sorted)
-        //     {
-        //         if (p != first)
-        //         {
-        //             sum += (p - prev);
-        //             prev = p;
-        //         }
-        //     }
-        //     avgSpacing = sum / static_cast<int>(sorted.size() - 1);
-        //     // printf("Spacing: %d\n", avgSpacing);
-        // }
     }
 
     /* Best row index */
@@ -1200,7 +1159,9 @@ void processImage(
             static_cast<int>(tolerancePercentage * static_cast<float>(avgSpacing)),
             0,
             static_cast<int>(maxOffsetPercentage * static_cast<float>(avgSpacing)),
-            bestPrev
+            bestPrev,
+            mask,
+            bestRow
         );
 
 
@@ -1225,24 +1186,6 @@ void processImage(
             }
             avgSpacing = sum / static_cast<int>(bestPrev.size() - 1);
         }
-
-        // Draw
-        for (auto& p : bestRowResult.noisePoints)
-        {
-            cv::circle(original2, cv::Point(p, bestRow), 20, cv::Scalar(0, 0, 0), -1);
-        }
-        for (auto& p : bestRowResult.realPoints)
-        {
-            cv::circle(original2, cv::Point(p, bestRow), 18, cv::Scalar(0, 0, 255), -1);
-        }
-        for (auto& p : bestRowResult.interpolatedPoints)
-        {
-            cv::circle(original2, cv::Point(p, bestRow), 18, cv::Scalar(0, 255, 255), -1);
-        }
-        for (auto& p : bestRowResult.previousPoints)
-        {
-            cv::circle(original2, cv::Point(p, bestRow), 16, cv::Scalar(0, 255, 0), -1);
-        }
     }
 
     resultingPoints[bestRow] = ResultWithOffsetSpacing(bestRowResult, 0, avgSpacing);
@@ -1252,7 +1195,7 @@ void processImage(
     int bestRowAvgSpacing = avgSpacing;
 
 
-    auto nextIdx = +[](int lIdx) { return lIdx + 1; };
+    auto nextIdx = +[](const int lIdx) { return lIdx + 1; };
     bool forwardsDir = true;
     int rowIdx = 0;
 
@@ -1316,7 +1259,9 @@ loopBeginningProcessImage:
             static_cast<int>(tolerancePercentage * static_cast<float>(avgSpacing)),
             prevOffset,
             static_cast<int>(maxOffsetPercentage * static_cast<float>(avgSpacing)),
-            prev
+            prev,
+            mask,
+            row
         );
 
         if (forwardsDir)
@@ -1369,34 +1314,12 @@ loopBeginningProcessImage:
         }
 
         prevOffset = result.offset;
-        // printf("Spacing: %d\n", avgSpacing);
-
-        // for (auto& p : result.noisePoints)
-        // {
-        //     cv::circle(original2, cv::Point(p, row), 20, cv::Scalar(0, 0, 0), -1); // red (BGR)
-        // }
-        // for (auto& p : result.realPoints)
-        // {
-        //     cv::circle(original2, cv::Point(p, row), 18, cv::Scalar(0, 0, 255), -1); // red (BGR)
-        // }
-        // for (auto& p : result.interpolatedPoints)
-        // {
-        //     cv::circle(original2, cv::Point(p, row), 18, cv::Scalar(0, 255, 255), -1); // red (BGR)
-        // }
-        // for (auto& p : result.previousPoints)
-        // {
-        //     cv::circle(original2, cv::Point(p, row), 16, cv::Scalar(0, 255, 0), -1); // red (BGR)
-        // }
-        // for (auto & p : realPoints)
-        // {
-        //     cv::circle(original2, cv::Point(p, fst), 14, cv::Scalar(0, 0, 255), -1); // red (BGR)
-        // }
     }
 
     if (forwardsDir)
     {
         prev = bestPrev;
-        nextIdx = +[](int lIdx) { return lIdx - 1; };
+        nextIdx = +[](const int lIdx) { return lIdx - 1; };
         rowIdx = bestRowIdx > 0 ? bestRowIdx - 1 : 0;
         forwardsDir = false;
         prevOffset = bestRowResult.offset;
@@ -1404,11 +1327,15 @@ loopBeginningProcessImage:
         goto loopBeginningProcessImage;
     }
 
-    // Finally populate points
-    for (int i = 0; i < allRowKeys.size() - 1; ++i)
+    // Finally continue points
+    auto nextIdxLambda = +[](const int lIdx) { return lIdx + 1; };
+    int firstIdx = 0;
+    bool continuePointsForwards = true;
+continuePoints:
+    for (int i = firstIdx; continuePointsForwards ? i < allRowKeys.size() - 1 : i > 0; i = nextIdxLambda(i))
     {
         int row = allRowKeys[i];
-        int nextRow = allRowKeys[i + 1];
+        int nextRow = allRowKeys[nextIdxLambda(i)];
 
         vector<int> xPoints = pointsByRow[row];
         ranges::sort(xPoints);
@@ -1432,13 +1359,14 @@ loopBeginningProcessImage:
         ranges::sort(nextPoints);
 
         vector<int> usedPrevPoints;
+        const int offset = continuePointsForwards ? nextPointsRaw.prevOffset : - nextPointsRaw.prevOffset;
         if (!prevPoints.empty())
         {
             for (auto& p : nextPoints)
             {
-                auto prevPoint = findClosestPoint(prevPoints, p, nextPointsRaw.prevOffset);
+                auto prevPoint = findClosestPoint(prevPoints, p, offset);
                 // TODO: Custom spacing
-                if (std::abs(p - (prevPoint + nextPointsRaw.prevOffset)) <= nextPointsRaw.avgSpacing / 2)
+                if (std::abs(p - (prevPoint + offset)) <= nextPointsRaw.avgSpacing / 2)
                 {
                     usedPrevPoints.push_back(prevPoint);
                 }
@@ -1454,99 +1382,151 @@ loopBeginningProcessImage:
         while (prevIter != unusedPrevPoints.end())
         {
             auto noiseIter = nextPointsResult.noisePoints.begin();
+            bool erased = false;
             while (noiseIter != nextPointsResult.noisePoints.end())
             {
                 // found real point
-                if (std::abs(*noiseIter - (*prevIter + nextPointsRaw.prevOffset)) <= tolerancePercentage * nextPointsRaw.avgSpacing / 2)
+                if (std::abs(*noiseIter - (*prevIter + offset)) <= tolerancePercentage * nextPointsRaw.avgSpacing / 2)
                 {
+                    // not in mask, ignore
+                    if (mask.at<uint8_t>(nextRow, *noiseIter) == 0)
+                    {
+                        ++noiseIter;
+                        continue;
+                    }
                     nextPointsResult.realPoints.push_back(*noiseIter);
                     prevIter = unusedPrevPoints.erase(prevIter);
+                    erased = true;
                     nextPointsResult.noisePoints.erase(noiseIter);
                     break;
                 }
                 ++noiseIter;
             }
-            if (prevIter != unusedPrevPoints.end())
+            if (prevIter != unusedPrevPoints.end() && !erased)
                 ++prevIter;
         }
 
         for (auto& p : unusedPrevPoints)
         {
-            nextPointsResult.previousPoints.push_back(p + nextPointsRaw.prevOffset);
+            // check if in mask
+            if (mask.at<uint8_t>(nextRow, p + offset) != 0)
+            {
+                nextPointsResult.previousPoints.push_back(p + offset);
+            }
         }
 
         nextPointsRaw.result = nextPointsResult;
         resultingPoints[nextRow] = nextPointsRaw;
     }
 
-    // TODO: Same but reverse
+    if (continuePointsForwards)
+    {
+        continuePointsForwards = false;
+        nextIdxLambda = +[](const int lIdx) { return lIdx - 1; };
+        firstIdx = static_cast<int>(allRowKeys.size() - 1);
+        goto continuePoints;
+    }
 
     for (int i = 0; i < allRowKeys.size() - 1; ++i)
     {
         int row = allRowKeys[i];
         AdaptivePatternResult result = resultingPoints[row].result;
-        for (auto& p : result.noisePoints)
-        {
-            cv::circle(original2, cv::Point(p, row), 20, cv::Scalar(0, 0, 0), -1); // red (BGR)
-        }
+        // for (auto& p : result.noisePoints)
+        // {
+        //     cv::circle(originalImage, cv::Point(p, row), 20, cv::Scalar(0, 0, 0), -1); // red (BGR)
+        // }
         for (auto& p : result.realPoints)
         {
-            cv::circle(original2, cv::Point(p, row), 18, cv::Scalar(0, 0, 255), -1); // red (BGR)
+            cv::circle(originalImage, cv::Point(p, row), 18, cv::Scalar(0, 0, 255), -1); // red (BGR)
         }
         for (auto& p : result.interpolatedPoints)
         {
-            cv::circle(original2, cv::Point(p, row), 18, cv::Scalar(0, 255, 255), -1); // red (BGR)
+            cv::circle(originalImage, cv::Point(p, row), 18, cv::Scalar(0, 255, 255), -1); // red (BGR)
         }
         for (auto& p : result.previousPoints)
         {
-            cv::circle(original2, cv::Point(p, row), 16, cv::Scalar(0, 255, 0), -1); // red (BGR)
+            cv::circle(originalImage, cv::Point(p, row), 16, cv::Scalar(0, 255, 0), -1); // red (BGR)
         }
     }
 
+    for (int i = 0; i < allRowKeys.size() - 1; ++i)
+    {
+        int row = allRowKeys[i];
+        AdaptivePatternResult result = resultingPoints[row].result;
 
-    // imwrite(R"(/home/askolds/Downloads/DroniOtsu/3_FIND_LINES.jpg)", output);
+        vector<int> points;
+        points.insert(points.end(), result.realPoints.begin(), result.realPoints.end());
+        points.insert(points.end(), result.interpolatedPoints.begin(),
+                               result.interpolatedPoints.end());
+        points.insert(points.end(), result.previousPoints.begin(), result.previousPoints.end());
+        ranges::sort(points);
 
-    // Optional: Enlarge dots
-    // cv::Mat dilated;
-    // cv::Mat kernel = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(5, 5));
-    // cv::dilate(centerDotsMat, dilated, kernel);
+        if (points.empty())
+        {
+            continue;
+        }
 
-    // Convert result back to UMat
-    // cv::UMat centerDots;
-    // dilated.copyTo(centerDots);
+        vector<int> betweenRowPoints;
 
-    // imwrite(R"(/home/askolds/Downloads/DroniOtsu/3_FIND.jpg)", original);
-    imwrite(R"(/home/askolds/Downloads/DroniOtsu/3_FIND_CLEAN.jpg)", original2);
-    // Resize for display
-    // cv::UMat resizedOutput;
-    // cv::resize(output, resizedOutput, cv::Size(), displayScale, displayScale, cv::INTER_AREA);
-    // cv::imshow("Visualization", resizedOutput);
-    // cv::waitKey(0);
+        int pointBefore = points.front() - resultingPoints[row].avgSpacing / 2;
+        if (mask.at<uint8_t>(row, pointBefore) != 0)
+        {
+            betweenRowPoints.push_back(pointBefore);
+        }
 
-    // Resize for viewing
-    // cv::UMat resizedOutput;
-    // cv::resize(output, resizedOutput, cv::Size(), displayScale, displayScale, cv::INTER_AREA);
-    //
-    // cv::imshow("Visualization", resizedOutput);
-    // cv::waitKey(0);
+        auto pointsIter = points.begin();
+        while (pointsIter != points.end())
+        {
+            if (next(pointsIter) == points.end())
+            {
+                break;
+            }
+            int currPoint = *pointsIter;
+            int nextPoint = *next(pointsIter);
+
+            int betweenRowPoint = currPoint + (nextPoint - currPoint) / 2;
+
+            if (mask.at<uint8_t>(row, betweenRowPoint) != 0)
+            {
+                betweenRowPoints.push_back(betweenRowPoint);
+            }
+            ++pointsIter;
+        }
+
+        int pointAfter = points.back() + resultingPoints[row].avgSpacing / 2;
+        if (mask.at<uint8_t>(row, pointAfter) != 0)
+        {
+            betweenRowPoints.push_back(pointAfter);
+        }
+
+        for (auto& p : betweenRowPoints)
+        {
+            cv::circle(originalImage, cv::Point(p, row), 18, cv::Scalar(255, 0, 0), -1); // red (BGR)
+        }
+    }
+
+    imwrite(R"(/home/askolds/Downloads/DroniOtsu/3_FIND_CLEAN.jpg)", originalImage);
 }
 
 int main()
 {
     // Load image into UMat directly for GPU-acceleration
-    cv::UMat img;
-    cv::imread(R"(/home/askolds/Downloads/DroniOtsu/woOutlier/011_A_45m_Contour_otsu_4.jpg)",
+    UMat img;
+    imread(R"(/home/askolds/Downloads/DroniOtsu/2_Otsu_4.jpg)",
                cv::IMREAD_GRAYSCALE).copyTo(img);
     if (img.empty())
     {
         std::cerr << "Failed to load image\n";
         return -1;
     }
+    const Mat originalImg = imread(R"(/home/askolds/Downloads/DroniOtsu/011_A_45m_Contour.jpg)", cv::IMREAD_COLOR);
 
-    int stripHeight = 60; // height of each horizontal strip
-    int threshold = 3; //stripHeight / 2;     // white pixel count threshold
+    const Mat mask = imread(R"(/home/askolds/Downloads/DroniOtsu/011_A_45m_Contour_field_mask.jpg)", cv::IMREAD_GRAYSCALE);
 
-    processImage(img, stripHeight, threshold, 0.1, 0.16, 0.05);
+    const int stripHeight = 50; // height of each horizontal strip
+    const float threshold = 3; //stripHeight / 2;     // white pixel count threshold
+
+    processImage(img, originalImg, mask, stripHeight, threshold, 0.1, 0.15);
 
     return 0;
 }
