@@ -1,6 +1,8 @@
 #include "../jni/org_askolds_cmptest_opencv_OpenCVStuff.h"
 #include <opencv2/opencv.hpp>
+#include "headers/Otsu.h"
 
+using namespace std;
 using namespace cv;
 
 /**
@@ -109,7 +111,7 @@ void OtsuApply(
     tempUMat.copyTo(maskUMat);
 }
 
-const char *Otsuu(
+const string Otsuu(
     const char *src,
     const char *mask,
     const char *workDir,
@@ -144,10 +146,11 @@ const char *Otsuu(
         // Possible improvement: Apply color index to previous iteration's mask, and normalize for more resolution
         printf("Running otsu No. %d\n", i + 1);
         OtsuApply(srcUMat, maskUMat, tempUMat);
-        imwrite(std::format("{}\\{}_Otsu_{}.{}", workDir, nr, i + 1, extension), maskUMat);
+        imwrite(std::format("{}/{}_Otsu_{}.{}", workDir, nr, i + 1, extension), maskUMat);
     }
 
-    return "Test";
+    auto outputFile = std::format("{}/{}_Otsu_{}.{}", workDir, nr, repeat, extension);
+    return outputFile;
 }
 
 JNIEXPORT jstring JNICALL Java_org_askolds_cmptest_opencv_OpenCVStuff_otsu

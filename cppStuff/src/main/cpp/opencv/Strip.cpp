@@ -6,8 +6,7 @@
 #include <vector>
 #include <iostream>
 #include <unordered_set>
-
-#define INCLUDE_NOISE
+#include "headers/Strip.h"
 
 using namespace cv;
 using namespace std;
@@ -28,11 +27,68 @@ struct AdaptivePatternResult
     int offset = 0;
 };
 
+struct GraphNode
+{
+    int x;
+    int y;
+
+    bool operator<(const GraphNode& other) const
+    {
+        if (x != other.x)
+            return x < other.x;
+        return y < other.y;
+    }
+
+    bool operator==(const GraphNode& other) const
+    {
+        return x == other.x && y == other.y;
+    }
+};
+
+struct GraphEdge
+{
+    // index of row
+    int rowIdx = -1;
+    int distance = 0;
+    GraphNode from;
+    GraphNode to;
+
+    bool operator<(const GraphEdge& other) const
+    {
+        if (from != other.from)
+        {
+            return from < other.from;
+        }
+        if (to != other.to)
+        {
+            return to < other.to;
+        }
+        if (distance != other.distance)
+        {
+            return distance < other.distance;
+        }
+        return rowIdx < other.rowIdx;
+    }
+};
+
+struct BetweenPoint
+{
+    int x;
+    int xBefore;
+    int xAfter;
+
+    bool operator<(const BetweenPoint& other) const
+    {
+        return x < other.x;
+    }
+};
+
 struct ResultWithOffsetSpacing
 {
     AdaptivePatternResult result;
     int prevOffset;
     int avgSpacing;
+    vector<BetweenPoint> betweenRows;
 };
 
 int findClosestPoint(
@@ -1000,6 +1056,9 @@ void processImage(
     const cv::UMat& input,
     const Mat& originalImage,
     const Mat& mask,
+    const Mat& turnaroundMask,
+    const char* pathStart,
+    const char* extension,
     int stripHeight,
     float whiteThreshold,
     float tolerancePercentage,
@@ -1431,28 +1490,6 @@ continuePoints:
     {
         int row = allRowKeys[i];
         AdaptivePatternResult result = resultingPoints[row].result;
-        // for (auto& p : result.noisePoints)
-        // {
-        //     cv::circle(originalImage, cv::Point(p, row), 20, cv::Scalar(0, 0, 0), -1); // red (BGR)
-        // }
-        for (auto& p : result.realPoints)
-        {
-            cv::circle(originalImage, cv::Point(p, row), 18, cv::Scalar(0, 0, 255), -1); // red (BGR)
-        }
-        for (auto& p : result.interpolatedPoints)
-        {
-            cv::circle(originalImage, cv::Point(p, row), 18, cv::Scalar(0, 255, 255), -1); // red (BGR)
-        }
-        for (auto& p : result.previousPoints)
-        {
-            cv::circle(originalImage, cv::Point(p, row), 16, cv::Scalar(0, 255, 0), -1); // red (BGR)
-        }
-    }
-
-    for (int i = 0; i < allRowKeys.size() - 1; ++i)
-    {
-        int row = allRowKeys[i];
-        AdaptivePatternResult result = resultingPoints[row].result;
 
         vector<int> points;
         points.insert(points.end(), result.realPoints.begin(), result.realPoints.end());
@@ -1466,12 +1503,15 @@ continuePoints:
             continue;
         }
 
-        vector<int> betweenRowPoints;
+        int spacing = resultingPoints[row].avgSpacing;
 
-        int pointBefore = points.front() - resultingPoints[row].avgSpacing / 2;
-        if (mask.at<uint8_t>(row, pointBefore) != 0)
+        vector<BetweenPoint> betweenRowPoints;
+
+        int pointBeforeX = points.front() - spacing / 2;
+        auto prevPoint = BetweenPoint(-1, -1, -1);
+        if (mask.at<uint8_t>(row, pointBeforeX) != 0)
         {
-            betweenRowPoints.push_back(pointBefore);
+            prevPoint.x = pointBeforeX;
         }
 
         auto pointsIter = points.begin();
@@ -1484,72 +1524,561 @@ continuePoints:
             int currPoint = *pointsIter;
             int nextPoint = *next(pointsIter);
 
-            int betweenRowPoint = currPoint + (nextPoint - currPoint) / 2;
-
-            if (mask.at<uint8_t>(row, betweenRowPoint) != 0)
+            if (nextPoint - currPoint > spacing * 1.5)
             {
-                betweenRowPoints.push_back(betweenRowPoint);
+                int point1x = currPoint + spacing / 2;
+                int point2x = nextPoint - spacing / 2;
+                if (mask.at<uint8_t>(row, point1x) != 0)
+                {
+                    // set after for prev point, add it
+                    if (prevPoint.x != -1)
+                    {
+                        prevPoint.xAfter = point1x;
+                        betweenRowPoints.push_back(prevPoint);
+                    }
+                    // make this point the previous point
+                    prevPoint.xBefore = prevPoint.x;
+                    prevPoint.x = point1x;
+                    prevPoint.xAfter = -1;
+                }
+                if (mask.at<uint8_t>(row, point2x) != 0)
+                {
+                    // set after for prev point, add it
+                    if (prevPoint.x != -1)
+                    {
+                        prevPoint.xAfter = point2x;
+                        betweenRowPoints.push_back(prevPoint);
+                    }
+                    // make this point the previous point
+                    prevPoint.xBefore = prevPoint.x;
+                    prevPoint.x = point2x;
+                    prevPoint.xAfter = -1;
+                }
+            } else
+            {
+                int betweenRowPoint = currPoint + (nextPoint - currPoint) / 2;
+
+                if (mask.at<uint8_t>(row, betweenRowPoint) != 0)
+                {
+                    // set after for prev point, add it
+                    if (prevPoint.x != -1)
+                    {
+                        prevPoint.xAfter = betweenRowPoint;
+                        betweenRowPoints.push_back(prevPoint);
+                    }
+
+                    // make this point the previous point
+                    prevPoint.xBefore = prevPoint.x;
+                    prevPoint.x = betweenRowPoint;
+                    prevPoint.xAfter = -1;
+                }
             }
+
             ++pointsIter;
         }
 
-        int pointAfter = points.back() + resultingPoints[row].avgSpacing / 2;
+        int pointAfter = points.back() + spacing / 2;
         if (mask.at<uint8_t>(row, pointAfter) != 0)
         {
-            betweenRowPoints.push_back(pointAfter);
+            // set after for prev point, add it
+            if (prevPoint.x != -1)
+            {
+                prevPoint.xAfter = pointAfter;
+                betweenRowPoints.push_back(prevPoint);
+            }
+            // make this point the previous point
+            prevPoint.xBefore = prevPoint.x;
+            prevPoint.x = pointAfter;
+            prevPoint.xAfter = -1;
         }
 
-        for (auto& p : betweenRowPoints)
+        // push prevPoint one last time
+        if (prevPoint.x != -1)
         {
-            cv::circle(originalImage, cv::Point(p, row), 18, cv::Scalar(255, 0, 0), -1); // red (BGR)
+            betweenRowPoints.push_back(prevPoint);
+        }
+
+        resultingPoints[row].betweenRows = betweenRowPoints;
+    }
+
+    // pointToRowIdx[row][col] = { actualRows[idx] }
+    map<int, map<int, vector<int>>> pointToRowIdx;
+    vector<vector<pair<int, int>>> actualRows;
+
+    // first row
+    {
+        int firstRow = allRowKeys[0];
+        auto firstRowRaw = resultingPoints[firstRow];
+        vector<BetweenPoint> firstPoints = firstRowRaw.betweenRows;
+
+        // just add each row
+        for (auto& p : firstPoints)
+        {
+            vector<pair<int, int>> pointStart = {{p.x, firstRow}};
+            actualRows.push_back(pointStart);
+            vector<int> idxVec = { static_cast<int>(actualRows.size() - 1)};
+            pointToRowIdx[firstRow][p.x] = idxVec;
         }
     }
 
-    imwrite(R"(/home/askolds/Downloads/DroniOtsu/3_FIND_CLEAN.jpg)", originalImage);
-}
-
-int main()
-{
-    // Load image into UMat directly for GPU-acceleration
-    UMat img;
-    imread(R"(/home/askolds/Downloads/DroniOtsu/2_Otsu_4.jpg)",
-               cv::IMREAD_GRAYSCALE).copyTo(img);
-    if (img.empty())
+    // get actual crop rows
+    for (int i = 0; i < allRowKeys.size() - 2; ++i)
     {
-        std::cerr << "Failed to load image\n";
-        return -1;
+        int row = allRowKeys[i];
+        int nextRow = allRowKeys[i + 1];
+
+        auto prevPointsRaw = resultingPoints[row];
+        auto prevPointsView(prevPointsRaw.betweenRows | std::views::transform([](const auto& p) { return p.x; }));
+        vector<int> prevPoints(prevPointsView.begin(), prevPointsView.end());
+
+        auto nextPointsRaw = resultingPoints[nextRow];
+        vector<BetweenPoint> nextPoints = nextPointsRaw.betweenRows;
+
+        vector<BetweenPoint> usedNextPoints;
+        const int offset = nextPointsRaw.prevOffset;
+        // find existing rows
+        if (!prevPoints.empty())
+        {
+            for (auto& p : nextPoints)
+            {
+                auto prevPoint = findClosestPoint(prevPoints, p.x, offset);
+                // found previous point, use it's row
+                if (std::abs(p.x - (prevPoint + offset)) <= nextPointsRaw.avgSpacing / 2)
+                {
+                    // find previous row's index
+                    // at this point only one idx per point!
+                    int prevRowIdx = pointToRowIdx[row][prevPoint][0];
+                    actualRows[prevRowIdx].push_back({p.x, nextRow});
+                    // at this point only one idx per point!
+                    pointToRowIdx[nextRow][p.x] = { prevRowIdx };
+                    usedNextPoints.push_back(p);
+                }
+            }
+        }
+        vector<BetweenPoint> unusedNextPoints;
+
+        if (!nextPoints.empty())
+        {
+            set_difference(nextPoints.begin(), nextPoints.end(), usedNextPoints.begin(), usedNextPoints.end(),
+               std::back_inserter(unusedNextPoints));
+            // ranges::set_difference(nextPoints, usedNextPoints, std::back_inserter(unusedNextPoints));
+        }
+
+        // create rows for unused points
+        for (auto& p : unusedNextPoints)
+        {
+            vector<pair<int, int>> pointStart;
+            pointStart.push_back({p.x, nextRow});
+            actualRows.push_back(pointStart);
+            // at this point only one idx per point!
+            pointToRowIdx[nextRow][p.x] = { static_cast<int>(actualRows.size() - 1) };
+        }
     }
-    const Mat originalImg = imread(R"(/home/askolds/Downloads/DroniOtsu/011_A_45m_Contour.jpg)", cv::IMREAD_COLOR);
 
-    const Mat mask = imread(R"(/home/askolds/Downloads/DroniOtsu/011_A_45m_Contour_field_mask.jpg)", cv::IMREAD_GRAYSCALE);
+    // split rows
+    for (int i = 0; i < actualRows.size(); ++i)
+    {
+        auto points = actualRows[i];
 
-    const int stripHeight = 50; // height of each horizontal strip
-    const float threshold = 3; //stripHeight / 2;     // white pixel count threshold
+        bool firstPoints = true;
+        bool lastPoints = false;
+        bool ended = false;
+        auto pointsIter = points.begin();
+        while (pointsIter != points.end())
+        {
+            auto point = *pointsIter;
+            // don't do anything to the first points in turnaround zone
+            if (firstPoints)
+            {
+                // first turnaround points
+                if (turnaroundMask.at<uint8_t>(point.second, point.first) == 0)
+                {
+                    firstPoints = false;
+                }
+            }
+            // middle or end
+            else
+            {
+                // middle points
+                if (!lastPoints)
+                {
+                    // start last points, if not started
+                    if (turnaroundMask.at<uint8_t>(point.second, point.first) != 0)
+                    {
+                        lastPoints = true;
+                    }
+                }
+                // last points
+                else if (!ended)
+                {
+                    // stop lastPoints
+                    if (turnaroundMask.at<uint8_t>(point.second, point.first) == 0)
+                    {
+                        auto prevPointIter = std::prev(pointsIter);
+                        vector<pair<int, int>> remainingPoints(prevPointIter, points.end());
+                        actualRows.push_back(remainingPoints);
+                        // add new row to this point
+                        pointToRowIdx[prevPointIter->second][prevPointIter->first].push_back(static_cast<int>(actualRows.size() - 1));
+                        ended = true;
+                    }
+                }
+                // over last points
+                if (ended)
+                {
+                    // change the index, as old row no longer applies
+                    pointToRowIdx[point.second][point.first] = { static_cast<int>(actualRows.size() - 1) };
+                    // remove point from current row
+                    pointsIter = points.erase(pointsIter);
+                    continue;
+                }
+            }
 
-    processImage(img, originalImg, mask, stripHeight, threshold, 0.1, 0.15);
+            ++pointsIter;
+        }
+        actualRows[i] = points;
+    }
 
-    return 0;
+    set<GraphEdge> edges;
+    for (int i = 0; i < actualRows.size(); ++i)
+    {
+        auto points = actualRows[i];
+        auto startPoint = actualRows[i].front();
+        auto endPoint = actualRows[i].back();
+        {
+            auto node1 = GraphNode(startPoint.first, startPoint.second);
+            auto node2 = GraphNode(endPoint.first, endPoint.second);
+            if (node2 < node1)
+            {
+                swap(node1, node2);
+            }
+            edges.insert(GraphEdge(i, 0, node1, node2));
+        }
+
+        set<int> rowsNextToStart;
+        int startPoints = std::min(10, static_cast<int>(points.size()));
+
+        // find rows that are next to this row in the first 10 points
+        for (int pi = 0; pi < startPoints; ++pi)
+        {
+            auto point = points[pi];
+            auto rowPoints = resultingPoints[point.second].betweenRows;
+            // guard
+            if (rowPoints.empty())
+            {
+                continue;
+            }
+            auto bp = rowPoints.begin();
+            while (bp->x != point.first && bp != rowPoints.end())
+            {
+                ++bp;
+            }
+            // didn't find
+            if (bp == rowPoints.end())
+            {
+                continue;
+            }
+
+            // if truly next row
+            if (bp->xAfter != -1 && abs(bp->xAfter - bp->x) < resultingPoints[point.second].avgSpacing * 1.5)
+            {
+                auto rowsAfter = pointToRowIdx[point.second][bp->xAfter];
+                rowsNextToStart.insert(rowsAfter.begin(), rowsAfter.end());
+            }
+            // if truly previous row
+            if (bp->xBefore != -1 && abs(bp->x - bp->xBefore) < resultingPoints[point.second].avgSpacing * 1.5)
+            {
+                auto rowsBefore = pointToRowIdx[point.second][bp->xBefore];
+                rowsNextToStart.insert(rowsBefore.begin(), rowsBefore.end());
+            }
+        }
+
+        // get start/end points for rows
+        for (auto& rowIdx : rowsNextToStart)
+        {
+            auto row = actualRows[rowIdx];
+            // guaranteed to have elements, since we found it
+            auto rowStartPoint = row[0];
+            auto rowEndPoint = row[row.size() - 1];
+
+            {
+                bool inMask = true;
+                // check if in mask
+                cv::LineIterator it(turnaroundMask, Point(startPoint.first, startPoint.second), Point(rowStartPoint.first, rowStartPoint.second), 8);
+                for(int lineI = 0; lineI < it.count; lineI++, ++it)
+                {
+                    Point pt= it.pos();
+                    if (turnaroundMask.at<uint8_t>(pt) == 0)
+                    {
+                        inMask = false;
+                    }
+                }
+
+                if (inMask)
+                {
+                    auto node1 = GraphNode(startPoint.first, startPoint.second);
+                    auto node2 = GraphNode(rowStartPoint.first, rowStartPoint.second);
+                    if (node1 < node2)
+                    {
+                        swap(node1, node2);
+                    }
+                    int distance = static_cast<int>(sqrt(pow(node2.x - node1.x, 2) + pow(node2.y - node1.y, 2))) / stripHeight;
+                    edges.insert(GraphEdge(-1, distance, node1, node2));
+                }
+            }
+            {
+                bool inMask = true;
+                // check if in mask
+                cv::LineIterator it(turnaroundMask, Point(startPoint.first, startPoint.second), Point(rowEndPoint.first, rowEndPoint.second), 8);
+                for(int lineI = 0; lineI < it.count; lineI++, ++it)
+                {
+                    Point pt= it.pos();
+                    if (turnaroundMask.at<uint8_t>(pt) == 0)
+                    {
+                        inMask = false;
+                    }
+                }
+                if (inMask)
+                {
+                    auto node1 = GraphNode(startPoint.first, startPoint.second);
+                    auto node2 = GraphNode(rowEndPoint.first, rowEndPoint.second);
+                    if (node1 < node2)
+                    {
+                        swap(node1, node2);
+                    }
+                    int distance = static_cast<int>(sqrt(pow(node2.x - node1.x, 2) + pow(node2.y - node1.y, 2))) / stripHeight;
+                    edges.insert(GraphEdge(-1, distance, node1, node2));
+                }
+            }
+        }
+
+        set<int> rowsNextToEnd;
+        int endPoints = std::max(0, static_cast<int>(points.size() - 10));
+
+        // find rows that are next to this row in the first 10 points
+        for (int pi = static_cast<int>(points.size() - 1); pi > endPoints; --pi)
+        {
+            auto point = points[pi];
+            auto rowPoints = resultingPoints[point.second].betweenRows;
+            // guard
+            if (rowPoints.empty())
+            {
+                continue;
+            }
+            auto bp = rowPoints.begin();
+            while (bp->x != point.first && bp != rowPoints.end())
+            {
+                ++bp;
+            }
+            // didn't find
+            if (bp == rowPoints.end())
+            {
+                continue;
+            }
+
+            // if truly next row
+            if (abs(bp->xAfter - bp->x) < resultingPoints[point.second].avgSpacing * 1.5)
+            {
+                auto rowsAfter = pointToRowIdx[point.second][bp->xAfter];
+                rowsNextToEnd.insert(rowsAfter.begin(), rowsAfter.end());
+            }
+            // if truly previous row
+            if (abs(bp->x - bp->xBefore) < resultingPoints[point.second].avgSpacing * 1.5)
+            {
+                auto rowsBefore = pointToRowIdx[point.second][bp->xBefore];
+                rowsNextToEnd.insert(rowsBefore.begin(), rowsBefore.end());
+            }
+        }
+
+        // get start/end points for rows
+        for (auto& rowIdx : rowsNextToEnd)
+        {
+            auto row = actualRows[rowIdx];
+            // guaranteed to have elements, since we found it
+            auto rowStartPoint = row[0];
+            auto rowEndPoint = row[row.size() - 1];
+
+            {
+                bool inMask = true;
+                // check if in mask
+                cv::LineIterator it(turnaroundMask, Point(endPoint.first, endPoint.second), Point(rowStartPoint.first, rowStartPoint.second), 8);
+                for(int lineI = 0; lineI < it.count; lineI++, ++it)
+                {
+                    Point pt= it.pos();
+                    if (turnaroundMask.at<uint8_t>(pt) == 0)
+                    {
+                        inMask = false;
+                    }
+                }
+
+                if (inMask)
+                {
+                    auto node1 = GraphNode(endPoint.first, endPoint.second);
+                    auto node2 = GraphNode(rowStartPoint.first, rowStartPoint.second);
+                    if (node1 < node2)
+                    {
+                        swap(node1, node2);
+                    }
+                    int distance = static_cast<int>(sqrt(pow(node2.x - node1.x, 2) + pow(node2.y - node1.y, 2))) / stripHeight;
+                    edges.insert(GraphEdge(-1, distance, node1, node2));
+                }
+            }
+            {
+                bool inMask = true;
+                // check if in mask
+                cv::LineIterator it(turnaroundMask, Point(endPoint.first, endPoint.second), Point(rowEndPoint.first, rowEndPoint.second), 8);
+                for(int lineI = 0; lineI < it.count; lineI++, ++it)
+                {
+                    Point pt= it.pos();
+                    if (turnaroundMask.at<uint8_t>(pt) == 0)
+                    {
+                        inMask = false;
+                    }
+                }
+                if (inMask)
+                {
+                    auto node1 = GraphNode(endPoint.first, endPoint.second);
+                    auto node2 = GraphNode(rowEndPoint.first, rowEndPoint.second);
+                    if (node1 < node2)
+                    {
+                        swap(node1, node2);
+                    }
+                    int distance = static_cast<int>(sqrt(pow(node2.x - node1.x, 2) + pow(node2.y - node1.y, 2))) / stripHeight;
+                    edges.insert(GraphEdge(-1, distance, node1, node2));
+                }
+            }
+        }
+    }
+
+    {
+        Mat output;
+        originalImage.copyTo(output);
+        const auto outputName = std::format("{}{}.{}", pathStart, "RawPoints", extension);
+        for (int i = 0; i < allRowKeys.size() - 1; ++i)
+        {
+            int row = allRowKeys[i];
+            AdaptivePatternResult result = resultingPoints[row].result;
+            for (auto& p : result.noisePoints)
+            {
+                cv::circle(output, cv::Point(p, row), 20, cv::Scalar(0, 0, 0), -1); // red (BGR)
+            }
+            for (auto& p : result.realPoints)
+            {
+                cv::circle(output, cv::Point(p, row), 20, cv::Scalar(0, 0, 0), -1); // red (BGR)
+            }
+        }
+        imwrite(outputName, output);
+    }
+
+    {
+        Mat output;
+        originalImage.copyTo(output);
+        const auto outputName = std::format("{}{}.{}", pathStart, "Rows", extension);
+        for (int i = 0; i < allRowKeys.size() - 1; ++i)
+        {
+            int row = allRowKeys[i];
+            AdaptivePatternResult result = resultingPoints[row].result;
+            for (auto& p : result.noisePoints)
+            {
+                cv::circle(output, cv::Point(p, row), 14, cv::Scalar(0, 0, 0), -1); // red (BGR)
+            }
+            for (auto& p : result.realPoints)
+            {
+                cv::circle(output, cv::Point(p, row), 18, cv::Scalar(0, 0, 255), -1); // red (BGR)
+            }
+            for (auto& p : result.interpolatedPoints)
+            {
+                cv::circle(output, cv::Point(p, row), 18, cv::Scalar(0, 255, 255), -1); // red (BGR)
+            }
+            for (auto& p : result.previousPoints)
+            {
+                cv::circle(output, cv::Point(p, row), 16, cv::Scalar(0, 255, 0), -1); // red (BGR)
+            }
+        }
+        imwrite(outputName, output);
+    }
+
+    {
+        Mat output;
+        originalImage.copyTo(output);
+        const auto outputName = std::format("{}{}.{}", pathStart, "Graph", extension);
+        for (auto& edge : edges)
+        {
+            // cout << "From: " << edge.from.x << ", " << edge.from.y << ", To: " << edge.to.x << ", " << edge.to.y << ", idx: " << edge.rowIdx << endl;
+            Point p1 = Point(edge.from.x, edge.from.y);
+            Point p2 = Point(edge.to.x, edge.to.y);
+            cv::line(output, p1, p2, Scalar(255, 255, 255), 10);
+        }
+        imwrite(outputName, output);
+    }
+
+    const auto fileName = std::format("{}{}.{}", pathStart, "Edges", "txt");
+    FILE* outFile = fopen(fileName.c_str(), "w");
+    fprintf(outFile, "from,to,distance\n");
+    for (auto& edge : edges)
+    {
+        // cout << "From: " << edge.from.x << ", " << edge.from.y << ", To: " << edge.to.x << ", " << edge.to.y << ", idx: " << edge.rowIdx << endl;
+        Point p1 = Point(edge.from.x, edge.from.y);
+        Point p2 = Point(edge.to.x, edge.to.y);
+        int weight = edge.distance;
+        if (edge.rowIdx != -1)
+        {
+            weight = static_cast<int>(actualRows[edge.rowIdx].size());
+        }
+        fprintf(outFile, "(%d/%d),(%d/%d),%d\n", edge.from.x, edge.from.y, edge.to.x, edge.to.y, weight);
+    }
+    fclose(outFile);
+
+    {
+        Mat output;
+        originalImage.copyTo(output);
+        const auto outputName = std::format("{}{}.{}", pathStart, "BetweenRows", extension);
+        for (int i = 0; i < actualRows.size(); ++i)
+        {
+            int randNum1 = rand()%(255-0 + 1) + 0;
+            int randNum2 = rand()%(255-0 + 1) + 0;
+            int randNum3 = rand()%(255-0 + 1) + 0;
+            for (auto& p : actualRows[i])
+            {
+                cv::circle(output, cv::Point(p.first, p.second), 18, cv::Scalar(randNum1, randNum2, randNum3), -1); // red (BGR)
+            }
+        }
+        imwrite(outputName, output);
+    }
 }
 
-// R"(/home/askolds/Downloads\DroniOtsu\2_Otsu_4.jpg)"
-// R"(/home/askolds/Downloads\DroniOtsu\2_Otsu_4_TESTING.jpg)"
-
-const char* ColorIndexx(
-    const char* src,
+/**
+ *
+ * @param originalImg Oriģinālais attēls
+ * @param thresholdedImg Attēls ar krūma punktiem
+ * @param mask Maska, kurā rēķināt punktus
+ * @param turnaroundMask Maska, kurā var pārvietots starp rindām
+ * @param stripHeight
+ * @param threshold
+ * @param tolerance
+ * @param previousTolerance
+ * @param workDir Work dir
+ * @param nr
+ * @return
+ */
+const string Strip(
+    const char* originalImg,
+    const char* thresholdedImg,
     const char* mask,
+    const char* turnaroundMask,
+    const int stripHeight,
+    const float threshold,
+    const float tolerance,
+    const float previousTolerance,
     const char* workDir,
-    const double blue,
-    const double green,
-    const double red,
     const int nr
 )
 {
     // Get extension
-    const auto srcString = std::string(src);
-    std::string extension;
+    const auto srcString = std::string(originalImg);
+    std::string srcExtension;
     if (const std::size_t indexLastSeparator = srcString.find_last_of('.'); indexLastSeparator != std::string::npos)
     {
-        extension = srcString.substr(indexLastSeparator + 1);
+        srcExtension = srcString.substr(indexLastSeparator + 1);
     }
     else
     {
@@ -1557,41 +2086,15 @@ const char* ColorIndexx(
     }
 
     // Read images
-    const auto srcMat = imread(src, IMREAD_COLOR);
+    UMat thresholdedUMat;
+    imread(thresholdedImg, IMREAD_GRAYSCALE).copyTo(thresholdedUMat);
+    const auto originalMat = imread(originalImg, IMREAD_COLOR);
     const auto maskMat = imread(mask, IMREAD_GRAYSCALE);
+    const auto turnaroundMaskMat = imread(turnaroundMask, IMREAD_GRAYSCALE);
 
-    // Get umats
-    // auto srcUMat = srcMat.getUMat(ACCESS_RW);
-    // auto maskUMat = maskMat.getUMat(ACCESS_RW);
-    // auto resultUMat = UMat(srcUMat.size(), CV_32FC1);
-    // auto tempUMat = UMat(srcUMat.size(), CV_32FC1);
+    const auto outputName = std::format("{}/{}_Result_", workDir, nr);
 
-    printf("Running color index\n");
+    processImage(thresholdedUMat, originalMat, maskMat, turnaroundMaskMat, outputName.c_str(), srcExtension.c_str(), stripHeight, threshold, tolerance, previousTolerance);
 
-    UMat srcUMat;
-    srcMat.convertTo(srcUMat, CV_32FC3);
-    UMat maskUMat;
-    maskMat.copyTo(maskUMat);
-    auto resultUMat = UMat(srcUMat.size(), CV_32FC1);
-    auto tempUMat = UMat(srcUMat.size(), CV_32FC1);
-
-    //Apply to channels
-    transform(srcUMat, resultUMat, Matx13f(
-                  static_cast<float>(blue),
-                  static_cast<float>(green),
-                  static_cast<float>(red)
-              )
-    );
-
-    // Normalize (within the mask)
-    normalize(resultUMat, tempUMat, 0, 255, NORM_MINMAX, -1, maskUMat);
-
-    // Clear resultUMat
-    resultUMat.setTo(Scalar::all(0));
-    // Convert to CV_8UC1
-    tempUMat.convertTo(resultUMat, CV_8UC1);
-
-    imwrite(std::format("{}\\{}_ColorIndex.{}", workDir, nr, extension), resultUMat);
-
-    return "Test";
+    return outputName;
 }

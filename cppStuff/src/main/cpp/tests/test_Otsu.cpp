@@ -1,6 +1,6 @@
 #include <gtest/gtest.h>
 #include <opencv2/opencv.hpp>
-#include "../opencv/Otsu.cpp"  // Include the actual implementation
+#include "../opencv/headers/Otsu.h"  // Include the actual implementation
 
 TEST(OtsuThresholdTest, ValidImage) {
     // std::string inputPath = "C:\\Users\\askolds\\Downloads\\DroniOtsu\\011_A_45m_Contour.jpg";

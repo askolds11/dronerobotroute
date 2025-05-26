@@ -43,10 +43,16 @@ if (JNI_FOUND)
 endif()
 
 # ---------------------- Source and Header Files ----------------------
-set(SOURCES opencv/Otsu.cpp)
-set(SOURCES opencv/ColorIndex.cpp)
-set(SOURCES opencv/Strip.cpp)
-set(HEADERS jni/org_askolds_cmptest_opencv_OpenCVStuff.h)
+set(SOURCES opencv/Otsu.cpp
+        opencv/ColorIndex.cpp
+        opencv/Strip.cpp
+)
+set(HEADERS
+        jni/org_askolds_cmptest_opencv_OpenCVStuff.h
+        opencv/headers/Strip.h
+        opencv/headers/ColorIndex.h
+        opencv/headers/Otsu.h
+)
 
 # ---------------------- Main Executable ----------------------
 add_executable(OpenCVStuff ${SOURCES})
@@ -77,7 +83,13 @@ FetchContent_MakeAvailable(googletest)
 enable_testing()
 
 # Test executable
-add_executable(OpenCVTests tests/test_Otsu.cpp tests/test_ColorIndex.cpp)
+add_executable(OpenCVTests
+        ${SOURCES}
+        tests/test_Otsu.cpp
+        tests/test_ColorIndex.cpp
+        tests/test_Strip.cpp
+        tests/test_All.cpp
+)
 
 # Include directories for tests
 target_include_directories(OpenCVTests PRIVATE
@@ -92,6 +104,7 @@ target_link_libraries(OpenCVTests PRIVATE
         GTest::gtest_main
         ${OpenCV_LIBS}  # Explicit OpenCV library
         ${JNI_LIBRARIES}
+        nlohmann_json::nlohmann_json
 )
 
 # Add tests to CMake

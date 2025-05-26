@@ -1,9 +1,11 @@
 #include "../jni/org_askolds_cmptest_opencv_OpenCVStuff.h"
 #include <opencv2/opencv.hpp>
+#include "headers/ColorIndex.h"
 
+using namespace std;
 using namespace cv;
 
-const char *ColorIndexx(
+const string ColorIndexx(
     const char *src,
     const char *mask,
     const char *workDir,
@@ -56,9 +58,10 @@ const char *ColorIndexx(
     // Convert to CV_8UC1
     tempUMat.convertTo(resultUMat, CV_8UC1);
 
-    imwrite(std::format("{}\\{}_ColorIndex.{}", workDir, nr, extension), resultUMat);
+    auto outputFile = std::format("{}/{}_ColorIndex.{}", workDir, nr, extension);
+    imwrite(outputFile, resultUMat);
 
-    return "Test";
+    return outputFile;
 }
 
 JNIEXPORT jstring JNICALL Java_org_askolds_cmptest_opencv_OpenCVStuff_colorIndex
