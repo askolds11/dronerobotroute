@@ -1,0 +1,6 @@
+cmake_minimum_required(VERSION 3.10)
+project( ShowRoute )
+find_package( OpenCV REQUIRED )
+include_directories( ${OpenCV_INCLUDE_DIRS} )
+add_executable( ShowRoute ShowRoute.cpp )
+target_link_libraries( ShowRoute ${OpenCV_LIBS} )

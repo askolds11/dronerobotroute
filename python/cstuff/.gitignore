@@ -1,0 +1,10 @@
+.idea
+ShowRoute
+.ninja_log
+.ninja_deps
+CMakeFiles
+CMakeCache.txt
+build.ninja
+Testing
+cmake_install.cmake
+.cmake
