@@ -196,7 +196,7 @@ SimplePointsResult extractAdaptivePattern3(
             const float rowsRaw = static_cast<float>(std::abs(nextPoint - currentPoint)) / static_cast<float>(spacing);
             // rounded (up/down), prefer a little bit to round down
             const long roundedRows = std::lrint(rowsRaw - 0.1);
-            const int noise = static_cast<int>(std::abs(spacing - std::abs(nextPoint - currentPoint) / roundedRows));
+            const int noise = static_cast<int>(std::abs(spacing * roundedRows - std::abs(nextPoint - currentPoint)));
 
             // check if next point isn't better for spacing
             if (idx + 2 < xPoints.size())
@@ -208,7 +208,7 @@ SimplePointsResult extractAdaptivePattern3(
                     spacing);
                 // rounded (up/down), prefer a little bit to round down
                 long nextRoundedRows = std::lrint(nextRowsRaw - 0.1);
-                const int nextNoise = static_cast<int>(std::abs(spacing - std::abs(nextNextPoint - currentPoint) / nextRoundedRows));
+                const int nextNoise = static_cast<int>(std::abs(spacing * nextRoundedRows - std::abs(nextNextPoint - currentPoint)));
                 // next point is better, if noise is smaller, and difference is x rows
                 if (nextRowsRaw - rowsRaw <= 0.5 && nextNoise < noise)
                 {
@@ -463,7 +463,7 @@ loopBeginning:
             // rounded (up/down), prefer a little bit to round down
             long roundedRows = std::lrint(rowsRaw - 0.1);
             /* amount of pixels difference for perfect spacing between the points */
-            int noise = static_cast<int>(std::abs(spacing - std::abs(nextPoint - currentPoint) / roundedRows));
+            int noise = static_cast<int>(std::abs(spacing * roundedRows - std::abs(nextPoint - currentPoint)));
 
             if (!prevPoints.empty())
             {
@@ -489,7 +489,7 @@ loopBeginning:
                 // rounded (up/down), prefer a little bit to round down
                 long nextRoundedRows = std::max(1l, std::lrint(nextRowsRaw - 0.1));
                 int nextNoise = static_cast<int>(std::abs(
-                    spacing - std::abs(nextNextPoint - currentPoint) / nextRoundedRows));
+                    spacing * nextRoundedRows - std::abs(nextNextPoint - currentPoint)));
 
                 // next point is better, if noise is smaller, and is for the same row
                 if (nextRowsRaw - rowsRaw <= 0.5 && nextNoise < noise)

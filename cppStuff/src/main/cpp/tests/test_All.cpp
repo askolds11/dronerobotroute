@@ -26,25 +26,25 @@ TEST(AllTest, Img1) {
     const string mask = string(workDir) + "/" + string("011_A_45m_Contour_field_mask_improved.jpg");
     const string turnaroundMask = string(workDir) + "/" + string("011_A_45m_Contour_field_mask_turnarounds.jpg");
 
-    // cout << "Color index" << endl;
-    // const auto colorIndex = ColorIndexx(
-    //     originalImg.c_str(),
-    //     bushMask.c_str(),
-    //     workDir,
-    //     1.5,
-    //     0.5,
-    //     -2,
-    //     1
-    // );
-    // cout << "Otsu" << endl;
-    // const auto otsu = Otsuu(
-    //     colorIndex.c_str(),
-    //     bushMask.c_str(),
-    //     workDir,
-    //     2,
-    //     3
-    // );
-    const auto otsu = workDirString + "/2_Otsu_3.jpg";
+    cout << "Color index" << endl;
+    const auto colorIndex = ColorIndexx(
+        originalImg.c_str(),
+        bushMask.c_str(),
+        workDir,
+        1.5,
+        0.5,
+        -2,
+        1
+    );
+    cout << "Otsu" << endl;
+    const auto otsu = Otsuu(
+        colorIndex.c_str(),
+        bushMask.c_str(),
+        workDir,
+        2,
+        3
+    );
+    // const auto otsu = workDirString + "/2_Otsu_3.jpg";
     cout << "Strips" << endl;
     Strip(
         originalImg.c_str(),
@@ -177,7 +177,7 @@ TEST(AllTest, Img2Exg) {
         bushMask.c_str(),
         workDir,
         2,
-        5
+        3
     );
     // const auto otsu = workDirString + "/2_Otsu_3.jpg";
     cout << "Strips" << endl;
