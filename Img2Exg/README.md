@@ -1,5 +1,5 @@
 # Laiks
-Laiks bija mākoņains, bet arī drusku mainīgs gaismas apjomā. Bija ļoti vējains, kas izraisīja drona kustību un krūmu kustību, tādēļ attēlā ir daudz artifaktu un nepareizi salipināti krūmi.
+Laiks bija mākoņains, bet arī mainīgs gaismas apjomā. Bija ļoti vējains, kas izraisīja drona kustību un krūmu kustību, tādēļ attēlā ir daudz artifaktu un nepareizi salipināti krūmi.
 
 # Rezultāti
 
